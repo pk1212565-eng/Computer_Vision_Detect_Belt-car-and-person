@@ -1,23 +1,26 @@
 
 import streamlit as st
-import requests
-import cv2
 import numpy as np
 from PIL import Image
-import io
+from ultralytics import YOLO
 
 st.set_page_config(
     page_title="AI Safety Detection Dashboard",
+    page_icon="🪖",
     layout="wide"
 )
 
-st.title("AI Safety Violation Detection Dashboard")
-st.write("Detect objects using your YOLO backend API.")
+st.title("🪖 AI Safety Detection Dashboard")
+st.write("Upload an image to detect objects using YOLO.")
 
-# Local development ke liye:
-API_URL = "http://127.0.0.1:8000/predict"
+@st.cache_resource
+def load_model():
+    return YOLO("yolo11n.pt")
 
-st.sidebar.header("Configuration")
+uploaded_file = st.file_uploader(
+    "Upload an image",
+    type=["jpg", "jpeg", "png"]
+)
 
 conf_threshold = st.sidebar.slider(
     "Confidence Threshold",
@@ -27,139 +30,63 @@ conf_threshold = st.sidebar.slider(
     step=0.05
 )
 
-COLOR_MAP = {
-    "helmet": (0, 255, 0),
-    "license plate": (0, 255, 255),
-    "seatbelt": (255, 0, 0),
-    "person": (255, 128, 0),
-    "car": (128, 0, 128)
-}
-
-uploaded_file = st.file_uploader(
-    "Upload an Image",
-    type=["jpg", "jpeg", "png"]
-)
-
 if uploaded_file is not None:
-    image_bytes = uploaded_file.getvalue()
-
     try:
-        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    except Exception:
-        st.error("Image open nahi ho saki. Doosri image try karo.")
-        st.stop()
+        image = Image.open(uploaded_file).convert("RGB")
 
-    col1, col2 = st.columns(2)
+        col1, col2 = st.columns(2)
 
-    with col1:
-        st.subheader("Original Image")
-        st.image(image, use_container_width=True)
+        with col1:
+            st.subheader("Original Image")
+            st.image(image, use_container_width=True)
 
-    with col2:
-        st.subheader("Detection Result")
+        if st.button("Run AI Detection 🚀"):
+            with st.spinner("Loading YOLO and detecting objects..."):
+                model = load_model()
 
-        if st.button("Run AI Detection"):
-            try:
-                with st.spinner("AI image process kar raha hai..."):
-                    files = {
-                        "file": (
-                            uploaded_file.name,
-                            image_bytes,
-                            uploaded_file.type or "image/jpeg"
-                        )
-                    }
+                image_array = np.array(image)
 
-                    response = requests.post(
-                        API_URL,
-                        files=files,
-                        timeout=120
-                    )
+                results = model.predict(
+                    source=image_array,
+                    conf=conf_threshold,
+                    verbose=False
+                )
 
-                    response.raise_for_status()
-                    data = response.json()
-                    predictions = data.get("predictions", [])
+                # Ultralytics plot returns a BGR image
+                annotated_image = results[0].plot()
+                annotated_image = annotated_image[:, :, ::-1]
 
-                    img_cv = cv2.cvtColor(
-                        np.array(image),
-                        cv2.COLOR_RGB2BGR
-                    )
-
-                    detections_count = 0
-
-                    for pred in predictions:
-                        confidence = float(pred["confidence"])
-
-                        if confidence < conf_threshold:
-                            continue
-
-                        x1, y1, x2, y2 = map(
-                            int, pred["box"]
-                        )
-
-                        class_name = str(pred["class"])
-                        label = (
-                            f"{class_name} "
-                            f"{confidence * 100:.1f}%"
-                        )
-
-                        color = COLOR_MAP.get(
-                            class_name.lower(),
-                            (255, 255, 255)
-                        )
-
-                        cv2.rectangle(
-                            img_cv,
-                            (x1, y1),
-                            (x2, y2),
-                            color,
-                            2
-                        )
-
-                        cv2.putText(
-                            img_cv,
-                            label,
-                            (x1, max(y1 - 10, 20)),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.6,
-                            color,
-                            2
-                        )
-
-                        detections_count += 1
-
-                    img_result = cv2.cvtColor(
-                        img_cv,
-                        cv2.COLOR_BGR2RGB
-                    )
-
+                with col2:
+                    st.subheader("Detection Result")
                     st.image(
-                        img_result,
+                        annotated_image,
                         use_container_width=True
                     )
 
-                    st.success(
-                        f"Detected objects: {detections_count}"
-                    )
+                boxes = results[0].boxes
 
-            except requests.exceptions.ConnectionError:
-                st.error(
-                    "FastAPI backend connect nahi hua. "
-                    "Backend URL aur server check karo."
-                )
+                count = len(boxes) if boxes is not None else 0
 
-            except requests.exceptions.Timeout:
-                st.error(
-                    "Backend response mein der ho rahi hai. "
-                    "Dobara try karo."
-                )
+                st.success(f"Detection complete! Objects found: {count}")
 
-            except requests.exceptions.HTTPError as e:
-                st.error(f"Backend API error: {e}")
+                if boxes is not None and count > 0:
+                    st.subheader("Detection Details")
 
-            except (KeyError, ValueError, TypeError) as e:
-                st.error(
-                    f"Prediction response ka format ghalat hai: {e}"
-                )
+                    details = []
 
-            except Exception as e:
-                st.error(f"Unexpected error: {e}")
+                    for box in boxes:
+                        class_id = int(box.cls.item())
+                        confidence = float(box.conf.item())
+
+                        details.append({
+                            "Object": model.names[class_id],
+                            "Confidence": f"{confidence:.1%}"
+                        })
+
+                    st.dataframe(details, use_container_width=True)
+
+                if count == 0:
+                    st.info("No objects detected above this confidence threshold.")
+
+    except Exception as e:
+        st.error(f"Detection failed: {e}")
