@@ -1,9 +1,5 @@
-fastapi
-uvicorn
-ultralytics
 streamlit
-opencv-python
+ultralytics
+opencv-python-headless
+Pillow
 numpy
-python-multipart
-pillow
-requests
